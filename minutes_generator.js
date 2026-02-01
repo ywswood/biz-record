@@ -137,58 +137,69 @@ async function processDocuments(force = false) {
             const file = files.next();
             const fileName = file.getName(); // 例: 260201_150000.txt
 
+            // 連番ファイル(_01) または タイムスタンプ(_162256) の両方を許可
+            if (!fileName.match(/^\d{6}_(\d{2}|\d{6})\.txt$/)) continue;
+
+            // 強制実行でない場合のみ、待機判定を行う
+            if (!force) {
+                const lastUpdated = file.getLastUpdated().getTime();
+                const now = Date.now();
+
+                if (now - lastUpdated < STABILITY_THRESHOLD_MS) {
+                    Logger.log(`⏳ 待機中（更新直後）: ${fileName}`);
+                    continue;
+                }
+            } else {
+                Logger.log(`⚡ 強制実行: ${fileName}（待機時間をスキップします）`);
+            }
+
+            const baseName = fileName.replace('.txt', '');
+
+            // 既に議事録があるかチェック
+            const minutesName = `【議事録】${baseName}`;
+            if (docFolder.getFilesByName(minutesName).hasNext()) {
+                continue; // 作成済みならスキップ
+            }
+
+            Logger.log(`📄 書類生成ターゲット検出: ${fileName}`);
+            const textContent = file.getBlob().getDataAsString();
+
+            let createdFiles = [];
+
+            // 1. 議事録作成
+            const minutesContent = await callGeminiForMinutes(textContent, MINUTES_PROMPTS.MINUTES);
+            if (minutesContent) {
+                const docFile = createMinutesDoc(docFolder, minutesName, minutesContent);
+                createdFiles.push(docFile);
+                Logger.log(`✅ 議事録作成完了: ${minutesName}`);
+            }
+
+            // 2. 企画書作成
+            const proposalName = `【企画書】${baseName}`;
+            if (!docFolder.getFilesByName(proposalName).hasNext()) {
+                const proposalContent = await callGeminiForMinutes(textContent, MINUTES_PROMPTS.PROPOSAL);
+                if (proposalContent) {
+                    const imageBlob = findSampleImage();
+                    const docFile = createMinutesDoc(docFolder, proposalName, proposalContent, imageBlob);
+                    createdFiles.push(docFile);
+                    Logger.log(`✅ 企画書作成完了: ${proposalName}`);
+                }
+            }
+
+            // 3. メール送信
+            if (createdFiles.length > 0) {
+                sendNotificationEmail(baseName, createdFiles);
+            }
+
+            processedCount++;
         }
-    } else {
-        Logger.log(`⚡ 強制実行: ${fileName}（待機時間をスキップします）`);
-    }
 
-    const baseName = fileName.replace('.txt', '');
-
-    // 既に議事録があるかチェック
-    const minutesName = `【議事録】${baseName}`;
-    if (docFolder.getFilesByName(minutesName).hasNext()) {
-        continue; // 作成済みならスキップ
-    }
-
-    Logger.log(`📄 書類生成ターゲット検出: ${fileName}`);
-    const textContent = file.getBlob().getDataAsString();
-
-    let createdFiles = [];
-
-    // 1. 議事録作成
-    const minutesContent = await callGeminiForMinutes(textContent, MINUTES_PROMPTS.MINUTES);
-    if (minutesContent) {
-        const docFile = createMinutesDoc(docFolder, minutesName, minutesContent);
-        createdFiles.push(docFile);
-        Logger.log(`✅ 議事録作成完了: ${minutesName}`);
-    }
-
-    // 2. 企画書作成
-    const proposalName = `【企画書】${baseName}`;
-    if (!docFolder.getFilesByName(proposalName).hasNext()) {
-        const proposalContent = await callGeminiForMinutes(textContent, MINUTES_PROMPTS.PROPOSAL);
-        if (proposalContent) {
-            const imageBlob = findSampleImage();
-            const docFile = createMinutesDoc(docFolder, proposalName, proposalContent, imageBlob);
-            createdFiles.push(docFile);
-            Logger.log(`✅ 企画書作成完了: ${proposalName}`);
-        }
-    }
-
-    // 3. メール送信
-    if (createdFiles.length > 0) {
-        sendNotificationEmail(baseName, createdFiles);
-    }
-
-    processedCount++;
-}
-
-Logger.log(`=== 処理完了: ${processedCount}件のファイルを処理 ===`);
+        Logger.log(`=== 処理完了: ${processedCount}件のファイルを処理 ===`);
 
     } catch (error) {
-    Logger.log(`❌ メイン処理エラー: ${error.message}`);
-    Logger.log(error.stack);
-}
+        Logger.log(`❌ メイン処理エラー: ${error.message}`);
+        Logger.log(error.stack);
+    }
 }
 
 // ==========================================
