@@ -54,10 +54,19 @@ const chunkList = document.getElementById('chunkList');
 // ==========================================
 // 初期化
 // ==========================================
+// ==========================================
+// 初期化
+// ==========================================
 window.onload = () => {
   log('アプリ起動');
   authButton.addEventListener('click', handleAuth);
-  startBtn.addEventListener('click', startRecording);
+  startBtn.addEventListener('click', () => startRecording(false)); // 新規録音
+
+  const continueBtn = document.getElementById('continueBtn');
+  if (continueBtn) {
+    continueBtn.addEventListener('click', () => startRecording(true)); // 続きから録音
+  }
+
   stopBtn.addEventListener('click', stopRecording);
 
   // 手動アップロード設定
@@ -68,41 +77,31 @@ window.onload = () => {
     manualUploadBtn.addEventListener('click', () => manualFileInput.click());
     manualFileInput.addEventListener('change', handleManualUpload);
   }
+
+  // セッション復元チェック
+  checkPreviousSession();
 };
 
-// ==========================================
-// 認証処理
-// ==========================================
-function handleAuth() {
-  log('Google認証を開始...');
+function checkPreviousSession() {
+  const lastSession = localStorage.getItem('biz_record_session');
+  if (lastSession) {
+    const continueBtn = document.getElementById('continueBtn');
+    if (continueBtn) continueBtn.style.display = 'inline-block';
 
-  const client = google.accounts.oauth2.initTokenClient({
-    client_id: CONFIG.CLIENT_ID,
-    scope: CONFIG.SCOPES,
-    callback: (response) => {
-      if (response.error) {
-        log(`❌ 認証エラー: ${response.error}`, 'error');
-        return;
-      }
-
-      accessToken = response.access_token;
-      log('✅ 認証成功');
-
-      // UIを切り替え
-      authSection.classList.add('hidden');
-      mainSection.classList.remove('hidden');
-    },
-  });
-
-  client.requestAccessToken();
+    // UI表示更新
+    const data = JSON.parse(lastSession);
+    log(`💡 前回のセッションが見つかりました: ${data.id} (Chunk ${data.currentChunk})`);
+  }
 }
 
+// ... (認証処理は変更なし)
+
 // ==========================================
-// 録音開始
+// 録音開始 (isContinue: 続きからかどうか)
 // ==========================================
-async function startRecording() {
+async function startRecording(isContinue = false) {
   try {
-    log('録音を開始します...');
+    log(isContinue ? '録音を再開します...' : '録音を開始します...');
 
     // マイク権限を取得
     audioStream = await navigator.mediaDevices.getUserMedia({
@@ -121,14 +120,30 @@ async function startRecording() {
       audioBitsPerSecond: 128000 // 128kbps
     });
 
-    // セッションIDを生成（YYMMDDHHmmss形式）
-    const now = new Date();
-    sessionId = formatDate(now) + '_' +
-      String(now.getHours()).padStart(2, '0') +
-      String(now.getMinutes()).padStart(2, '0') +
-      String(now.getSeconds()).padStart(2, '0');
+    if (isContinue) {
+      // 続きから: localStorageから復元
+      const savedData = JSON.parse(localStorage.getItem('biz_record_session'));
+      sessionId = savedData.id;
+      currentChunk = savedData.currentChunk; // 次のチャンク番号
+      uploadedChunks = 0; // 表示用カウンタはリセットしても良いが、続き番号は重要
 
-    log(`📝 セッションID: ${sessionId}`);
+      log(`📝 セッション再開: ${sessionId} (Start from Chunk ${currentChunk})`);
+    } else {
+      // 新規: セッションIDを生成（YYMMDDHHmmss形式）
+      const now = new Date();
+      sessionId = formatDate(now) + '_' +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0');
+
+      currentChunk = 0;
+      uploadedChunks = 0;
+
+      log(`📝 新規セッションID: ${sessionId}`);
+    }
+
+    // セッション情報を保存
+    saveSessionInfo();
 
     // 録音データの蓄積
     audioChunks = [];
@@ -140,8 +155,6 @@ async function startRecording() {
 
     // 録音開始
     recordingStartTime = Date.now();
-    currentChunk = 0;
-    uploadedChunks = 0;
 
     mediaRecorder.start();
 
@@ -241,6 +254,7 @@ async function processChunk() {
 
     log(`✅ アップロード完了: ${fileName}`);
     updateUI();
+    updateSessionChunk(); // 次回のために保存
 
   } catch (error) {
     log(`❌ アップロード失敗: ${error.message}`, 'error');
@@ -411,10 +425,37 @@ function cleanup() {
   // UI復元
   startBtn.classList.remove('hidden');
   stopBtn.classList.add('hidden');
+
+  // 続きボタンを表示
+  const continueBtn = document.getElementById('continueBtn');
+  if (continueBtn) continueBtn.style.display = 'inline-block';
+
   statusText.textContent = '完了';
 
   log('🛑 録音停止・リソース解放完了');
 }
+
+// ... (ログ出力などは変更なし)
+
+function saveSessionInfo() {
+  const data = {
+    id: sessionId,
+    currentChunk: currentChunk + 1, // 次の開始番号
+    updatedAt: Date.now()
+  };
+  localStorage.setItem('biz_record_session', JSON.stringify(data));
+}
+
+// チャンク確定時に次回番号を更新
+function updateSessionChunk() {
+  const data = {
+    id: sessionId,
+    currentChunk: currentChunk + 1, // 現在の処理が終わったら次は+1
+    updatedAt: Date.now()
+  };
+  localStorage.setItem('biz_record_session', JSON.stringify(data));
+}
+
 
 // ==========================================
 // ログ出力

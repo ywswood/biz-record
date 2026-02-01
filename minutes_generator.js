@@ -1,37 +1,28 @@
 /**
  * ========================================================================
- * 🟢 議事録＆企画書 自動生成スクリプト
- * 🟢 このファイルの中身をすべてコピーして、新しいGASプロジェクトに貼り付けてください
+ * 🟢 議事録＆企画書 自動生成スクリプト（完全版：メール送信付き・変数名重複対応）
+ * 🟢 transcription.gs と共存可能
  * ========================================================================
- * 
- * 【機能】
- * 1. txtフォルダの書き起こしテキストを監視
- * 2. 議事録がまだ作られていないファイルを検出
- * 3. Gemini APIを使って「議事録」と「商品企画書」をGoogleドキュメントとして自動生成
- * 4. 企画書には指定の画像を挿入
- * 
- * 【設定】
- * 1. API Bankの設定（transcription.jsと同じ）
- * 2. フォルダIDの設定
- * 3. サンプル画像の設定（下記 CONFIG.SAMPLE_IMAGE_NAME 参照）
  */
 
 // ==========================================
-// 設定
+// 設定 (MINUTES_CONFIG)
 // ==========================================
-const CONFIG = {
-    // API Bank設定（transcription.jsと同じ）
+const MINUTES_CONFIG = {
+    // API Bank設定
     BANK_URL: 'https://script.google.com/macros/s/AKfycbxCscLkbbvTUU7sqpZSayJ8pEQlWl8mrEBaSy_FklbidJRc649HwWc4SF0Q3GvUQZbuGA/exec',
     BANK_PASS: '1030013',
     PROJECT_NAME: 'biz-record',
 
     // Google Driveフォルダ
-    TXT_FOLDER_ID: '11gbAyd8kdgZN8bD29PDAm32B0LuboVtq', // 読み込み元（テキスト）
-    DOC_FOLDER_ID: '1s3X47RZlrgDc3_MZQSgp5v9TvM8EUt_i', // 保存先（ドキュメント）
-    VOICE_FOLDER_ID: '1Drp4_rkJsLpdC49tzRDACcCnQb_ywl4h', // 画像検索用（voiceフォルダなど）
+    TXT_FOLDER_ID: '11gbAyd8kdgZN8bD29PDAm32B0LuboVtq', // 読み込み元
+    DOC_FOLDER_ID: '1s3X47RZlrgDc3_MZQSgp5v9TvM8EUt_i', // 保存先
+    VOICE_FOLDER_ID: '1Drp4_rkJsLpdC49tzRDACcCnQb_ywl4h', // 画像検索用
 
-    // サンプル画像名（Google Driveにこの名前で画像を置いてください）
-    // 企画書に挿入されます
+    // メール通知先
+    NOTIFICATION_EMAIL: 'y-inoue@woodstock.co.jp',
+
+    // サンプル画像名
     SAMPLE_IMAGE_NAME: 'sample_product.png',
 
     // リトライ設定
@@ -41,11 +32,16 @@ const CONFIG = {
 };
 
 // ==========================================
-// プロンプト定義
+// プロンプト定義 (MINUTES_PROMPTS)
 // ==========================================
-const PROMPTS = {
+const MINUTES_PROMPTS = {
     MINUTES: `
 以下の会議の書き起こしテキストから、指定のフォーマットで議事録を作成してください。
+
+【重要ルール】
+- **冒頭の挨拶（「承知しました」「以下に作成します」等）は一切不要です。**
+- 指定された出力フォーマットの中身だけを出力してください。
+- 余計な前置きや後書きは書かないでください。
 
 【出力フォーマット】
 ## 議事録：[会議名称]
@@ -78,6 +74,10 @@ const PROMPTS = {
 
     PROPOSAL: `
 以下の会議の書き起こしテキストから、この会議で議論されている「新商品」に関する企画書を作成してください。
+
+【重要ルール】
+- **冒頭の挨拶は一切不要です。**
+- **企画書の中身（見出し以降）のみ**を出力してください。
 
 【出力フォーマット】
 # 商品企画書：[商品名]
@@ -115,18 +115,25 @@ async function processDocuments() {
     try {
         Logger.log('=== 書類生成処理を開始 ===');
 
-        const txtFolder = DriveApp.getFolderById(CONFIG.TXT_FOLDER_ID);
-        const docFolder = DriveApp.getFolderById(CONFIG.DOC_FOLDER_ID);
+        const txtFolder = DriveApp.getFolderById(MINUTES_CONFIG.TXT_FOLDER_ID);
+        const docFolder = DriveApp.getFolderById(MINUTES_CONFIG.DOC_FOLDER_ID);
         const files = txtFolder.getFilesByType(MimeType.PLAIN_TEXT);
 
         let processedCount = 0;
+        const STABILITY_THRESHOLD_MS = 20 * 60 * 1000; // 20分以内の更新は処理しない（会議中とみなす）
 
         while (files.hasNext()) {
             const file = files.next();
-            const fileName = file.getName(); // 例: 260201_01.txt
+            const fileName = file.getName(); // 例: 260201_150000.txt (セッションファイル)
 
-            // 連番ファイルのみ対象 (YYMMDD_XX.txt)
-            if (!fileName.match(/^\d{6}_\d{2}\.txt$/)) continue;
+            // 更新から20分経過していないファイルはスキップ（まだ録音中かもしれない）
+            const lastUpdated = file.getLastUpdated().getTime();
+            const now = Date.now();
+
+            if (now - lastUpdated < STABILITY_THRESHOLD_MS) {
+                Logger.log(`⏳ 待機中（更新直後）: ${fileName}`);
+                continue;
+            }
 
             const baseName = fileName.replace('.txt', '');
 
@@ -136,25 +143,34 @@ async function processDocuments() {
                 continue; // 作成済みならスキップ
             }
 
-            Logger.log(`📄 新規テキスト検出: ${fileName}`);
+            Logger.log(`📄 書類生成ターゲット検出: ${fileName}`);
             const textContent = file.getBlob().getDataAsString();
 
+            let createdFiles = [];
+
             // 1. 議事録作成
-            const minutesContent = await callGemini(textContent, PROMPTS.MINUTES);
+            const minutesContent = await callGeminiForMinutes(textContent, MINUTES_PROMPTS.MINUTES);
             if (minutesContent) {
-                createGoogleDoc(docFolder, minutesName, minutesContent);
+                const docFile = createMinutesDoc(docFolder, minutesName, minutesContent);
+                createdFiles.push(docFile);
                 Logger.log(`✅ 議事録作成完了: ${minutesName}`);
             }
 
             // 2. 企画書作成
             const proposalName = `【企画書】${baseName}`;
             if (!docFolder.getFilesByName(proposalName).hasNext()) {
-                const proposalContent = await callGemini(textContent, PROMPTS.PROPOSAL);
+                const proposalContent = await callGeminiForMinutes(textContent, MINUTES_PROMPTS.PROPOSAL);
                 if (proposalContent) {
                     const imageBlob = findSampleImage();
-                    createGoogleDoc(docFolder, proposalName, proposalContent, imageBlob);
+                    const docFile = createMinutesDoc(docFolder, proposalName, proposalContent, imageBlob);
+                    createdFiles.push(docFile);
                     Logger.log(`✅ 企画書作成完了: ${proposalName}`);
                 }
+            }
+
+            // 3. メール送信
+            if (createdFiles.length > 0) {
+                sendNotificationEmail(baseName, createdFiles);
             }
 
             processedCount++;
@@ -171,29 +187,62 @@ async function processDocuments() {
 // ==========================================
 // Googleドキュメント作成
 // ==========================================
-function createGoogleDoc(folder, title, content, imageBlob = null) {
+function createMinutesDoc(folder, title, content, imageBlob = null) {
     const doc = DocumentApp.create(title);
     const body = doc.getBody();
 
-    // GeminiのMarkdown出力を簡易的にパースしてセット
-    // (注: 本格的なMarkdownパースは複雑なため、ここではプレーンテキストとして貼り付けつつ
-    //  必要な部分を目視で整えやすくする、あるいは簡易整形を行う)
-
     body.setText(content);
 
-    // 画像がある場合、最後またはタイトルの下に挿入
+    // 画像がある場合
     if (imageBlob) {
-        body.insertParagraph(0, ""); // スペース
-        const image = body.insertImage(1, imageBlob);
-        image.setWidth(400); // サイズ調整
-        image.setHeight(400 * (imageBlob.getHeight() ? imageBlob.getHeight() / imageBlob.getWidth() : 1));
+        try {
+            body.insertParagraph(0, "");
+            const image = body.insertImage(1, imageBlob);
+
+            // 修正: getHeightを使わず幅のみ指定
+            const originalWidth = image.getWidth();
+            if (originalWidth > 400) {
+                image.setWidth(400);
+                // 高さは自動
+            }
+        } catch (e) {
+            Logger.log(`⚠️ 画像挿入中にエラー(スキップしました): ${e.message}`);
+        }
     }
 
     doc.saveAndClose();
 
-    // 作成されたドキュメントを指定フォルダに移動
+    // フォルダ移動とファイル取得
     const docFile = DriveApp.getFileById(doc.getId());
     docFile.moveTo(folder);
+
+    return docFile;
+}
+
+// ==========================================
+// メール送信
+// ==========================================
+function sendNotificationEmail(baseName, files) {
+    const subject = `【商談書類生成】${baseName}`;
+    let body = `商談の自動文字起こしから、以下の書類を生成しました。\n\n`;
+    const attachments = [];
+
+    files.forEach(file => {
+        body += `・${file.getName()}\n${file.getUrl()}\n`;
+        attachments.push(file.getAs(MimeType.PDF));
+    });
+
+    body += `\n\n以上のファイルをPDFとして添付しました。ご確認ください。\n`;
+    body += `\n--\nBiz-Record Bot`;
+
+    MailApp.sendEmail({
+        to: MINUTES_CONFIG.NOTIFICATION_EMAIL,
+        subject: subject,
+        body: body,
+        attachments: attachments
+    });
+
+    Logger.log(`📧 メール送信完了: ${MINUTES_CONFIG.NOTIFICATION_EMAIL}`);
 }
 
 // ==========================================
@@ -201,36 +250,30 @@ function createGoogleDoc(folder, title, content, imageBlob = null) {
 // ==========================================
 function findSampleImage() {
     try {
-        // voiceフォルダ、またはtxtフォルダから画像を探す
-        const foldersToCheck = [CONFIG.VOICE_FOLDER_ID, CONFIG.TXT_FOLDER_ID];
+        const foldersToCheck = [MINUTES_CONFIG.VOICE_FOLDER_ID, MINUTES_CONFIG.TXT_FOLDER_ID];
 
         for (const folderId of foldersToCheck) {
             const folder = DriveApp.getFolderById(folderId);
-            const files = folder.getFilesByName(CONFIG.SAMPLE_IMAGE_NAME);
+            const files = folder.getFilesByName(MINUTES_CONFIG.SAMPLE_IMAGE_NAME);
             if (files.hasNext()) {
-                Logger.log(`🖼️ 画像発見: ${CONFIG.SAMPLE_IMAGE_NAME} in ${folder.getName()}`);
                 return files.next().getBlob();
             }
         }
-
-        Logger.log(`⚠️ 画像が見つかりません: ${CONFIG.SAMPLE_IMAGE_NAME}`);
         return null;
     } catch (e) {
-        Logger.log(`⚠️ 画像検索エラー: ${e.message}`);
         return null;
     }
 }
 
 // ==========================================
-// Gemini API 呼び出し (共通関数)
+// Gemini API 呼び出し
 // ==========================================
-async function callGemini(text, systemPrompt) {
+async function callGeminiForMinutes(text, systemPrompt) {
     let previousModel = null;
 
-    for (let attempt = 1; attempt <= CONFIG.MAX_RETRIES; attempt++) {
+    for (let attempt = 1; attempt <= MINUTES_CONFIG.MAX_RETRIES; attempt++) {
         try {
-            // API Bankからキー取得
-            let bankUrl = `${CONFIG.BANK_URL}?pass=${CONFIG.BANK_PASS}&project=${CONFIG.PROJECT_NAME}`;
+            let bankUrl = `${MINUTES_CONFIG.BANK_URL}?pass=${MINUTES_CONFIG.BANK_PASS}&project=${MINUTES_CONFIG.PROJECT_NAME}`;
             if (previousModel) {
                 bankUrl += `&error_503=true&previous_model=${encodeURIComponent(previousModel)}`;
             }
@@ -243,8 +286,6 @@ async function callGemini(text, systemPrompt) {
             }
 
             const { api_key, model_name } = bankData;
-
-            // Gemini API リクエスト
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model_name}:generateContent?key=${api_key}`;
 
             const payload = {
@@ -258,14 +299,14 @@ async function callGemini(text, systemPrompt) {
                 contentType: 'application/json',
                 payload: JSON.stringify(payload),
                 muteHttpExceptions: true,
-                timeout: CONFIG.API_TIMEOUT
+                timeout: MINUTES_CONFIG.API_TIMEOUT
             });
 
             const statusCode = geminiRes.getResponseCode();
 
             if (statusCode === 503) {
                 previousModel = model_name;
-                Utilities.sleep(CONFIG.RETRY_DELAY);
+                Utilities.sleep(MINUTES_CONFIG.RETRY_DELAY);
                 continue;
             }
 
@@ -279,8 +320,8 @@ async function callGemini(text, systemPrompt) {
 
         } catch (error) {
             Logger.log(`❌ Gemini呼び出しエラー(試行${attempt}): ${error.message}`);
-            if (attempt === CONFIG.MAX_RETRIES) return null;
-            Utilities.sleep(CONFIG.RETRY_DELAY);
+            if (attempt === MINUTES_CONFIG.MAX_RETRIES) return null;
+            Utilities.sleep(MINUTES_CONFIG.RETRY_DELAY);
         }
     }
     return null;
