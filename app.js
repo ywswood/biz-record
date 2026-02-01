@@ -94,7 +94,32 @@ function checkPreviousSession() {
   }
 }
 
-// ... (認証処理は変更なし)
+// ==========================================
+// 認証処理
+// ==========================================
+function handleAuth() {
+  log('Google認証を開始...');
+
+  const client = google.accounts.oauth2.initTokenClient({
+    client_id: CONFIG.CLIENT_ID,
+    scope: CONFIG.SCOPES,
+    callback: (response) => {
+      if (response.error) {
+        log(`❌ 認証エラー: ${response.error}`, 'error');
+        return;
+      }
+
+      accessToken = response.access_token;
+      log('✅ 認証成功');
+
+      // UIを切り替え
+      authSection.classList.add('hidden');
+      mainSection.classList.remove('hidden');
+    },
+  });
+
+  client.requestAccessToken();
+}
 
 // ==========================================
 // 録音開始 (isContinue: 続きからかどうか)

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -9,10 +10,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="録音">
-  
+
   <!-- Google Identity Services -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  
+
   <style>
     * {
       margin: 0;
@@ -178,8 +179,15 @@
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.3;
+      }
     }
 
     .chunk-list {
@@ -233,6 +241,7 @@
     }
   </style>
 </head>
+
 <body>
   <div class="container">
     <!-- 認証セクション -->
@@ -282,6 +291,10 @@
         <button id="startBtn" class="btn btn-primary">
           録音開始
         </button>
+        <button id="continueBtn" class="btn"
+          style="background: linear-gradient(135deg, #FF9800, #F57C00); color: white; display: none;">
+          ⏯️ 続きから録音
+        </button>
         <button id="stopBtn" class="btn btn-danger hidden">
           録音停止
         </button>
@@ -297,7 +310,8 @@
       <!-- 手動アップロード -->
       <div style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 20px;">
         <p style="font-size: 14px; margin-bottom: 10px;">救済・手動アップロード</p>
-        <button id="manualUploadBtn" class="btn" style="background: rgba(255,255,255,0.2); font-size: 14px; padding: 12px;">
+        <button id="manualUploadBtn" class="btn"
+          style="background: rgba(255,255,255,0.2); font-size: 14px; padding: 12px;">
           📁 ファイルを選択してアップロード
         </button>
         <input type="file" id="manualFileInput" accept=".webm" style="display: none">
@@ -310,4 +324,5 @@
 
   <script src="app.js"></script>
 </body>
+
 </html>
